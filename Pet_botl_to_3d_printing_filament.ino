@@ -1,209 +1,133 @@
-
-#define DRIVER_STEP_TIME 2  
-#define CLK 9
-#define DT 8
-#define SW 7
-
-#define B 3950 // B-коэффициент
-#define SERIAL_R 98000 // сопротивление последовательного резистора, 102 кОм
-#define THERMISTOR_R 100000 // номинальное сопротивления термистора, 100 кОм
-#define NOMINAL_T 25 // номинальная температура (при которой TR = 100 кОм)
-
-//#define PID_INTEGER
-#include "GyverStepper.h"
-#include "GyverEncoder.h"
-#include "GyverTimers.h"
 #include "GyverPID.h"
-#include <LiquidCrystal_I2C.h>
-GStepper< STEPPER2WIRE> stepper(200, 5, 4, 6);
-Encoder enc1(CLK, DT, SW);
-LiquidCrystal_I2C lcd(0x3F, 16, 2);
-//GyverPID regulator(15.0, 0.2, 10);
-GyverPID regulator(18.0, 0.4, 40.0);
-// 2 - STEP
-// 3 - DIR
-// 4 - EN
-#define FILTER_STEP 50
-#define FILTER_COEF 0.05
-int val;
-int val_f;
-int period=500;
-unsigned long filter_timer;
-const byte tempPin = A0;
-bool menu=0;
-float time_;
-int temp=0;
-int speed_=0;
-bool en=0;
+#include "GyverTimers.h"
+#define CLK 8
+#define DIO 9
 
+#include "GyverTM1637.h"
 
+GyverTM1637 disp(CLK, DIO);
+GyverPID regulator(1.8, 0.02, 0.01, 10);
+
+int delay_clc = 0;
+
+int prevSetTemp = 0;
+unsigned long timeSetTemp = 0;
 
 void setup() {
-  pinMode( tempPin, INPUT );
-  pinMode( 3, OUTPUT );
-  enc1.setType(TYPE2);
-  
-  stepper.setRunMode(KEEP_SPEED); // режим поддержания скорости
-  //stepper.setRunMode(FOLLOW_POS);
- // stepper.setMaxSpeed(speed_);
-  stepper.setAcceleration(500);
-  stepper.setSpeed(speed_,SMOOTH);
+  // put your setup code here, to run once:
+  Serial.begin(115200);
+
+  Timer2.setPeriod(500);     // Устанавливаем период таймера 20000 мкс -> 50 гц
+  Timer2.enableISR(CHANNEL_A);   // Или просто .enableISR(), запускаем прерывание на канале А таймера 2
+
+  pinMode( A3, INPUT );
+  pinMode( A2, INPUT );
+  pinMode( D6, OUTPUT );
+
+  pinMode(D3, OUTPUT);  
+
+  pinMode(D5, OUTPUT);  
+  pinMode( D4, OUTPUT );
+  digitalWrite(D4,1);
+
+  disp.clear();
+  disp.brightness(7);  // яркость, 0 - 7 (минимум - максимум)
   
   regulator.setDirection(NORMAL); // направление регулирования (NORMAL/REVERSE). ПО УМОЛЧАНИЮ СТОИТ NORMAL
   regulator.setLimits(0, 255);    // пределы (ставим для 8 битного ШИМ). ПО УМОЛЧАНИЮ СТОЯТ 0 И 255
-  regulator.setpoint = temp;        // сообщаем регулятору температуру, которую он должен поддерживать
-  regulator.setDt(period);
-  
-  lcd.init();
-  lcd.backlight();
-  lcd.clear();
-  lcd.setCursor(0,0);
-  lcd.print("Temp");
-  lcd.setCursor(0,1);
-  lcd.print("Speed");
-  
-  Serial.begin(9600);
-  
-  Timer2.setPeriod(800);
-  Timer2.enableISR();
+  regulator.setpoint = 0;        // сообщаем регулятору температуру, которую он должен поддерживать
 }
-ISR(TIMER2_A) {
-  stepper.tick(); // тикаем тут
-  enc1.tick();
-}
-void loop() {
- static uint32_t tmr;
- if(millis()-tmr>=period){
-  tmr = millis();
-  val_f=get_temp();
-  regulator.input = val_f;
-  regulator.getResult();
-  analogWrite(3, regulator.output);
-  Serial.print(val_f);
- Serial.print(" ");
- Serial.print(temp);
- Serial.print(" ");
- Serial.println(regulator.output);
- }
- 
-  if (enc1.isRight())
+
+void step()
+{
+  static unsigned long previousMicros = 0;
+  static bool state = 0;
+  unsigned long currentMicros = micros();
+  if(currentMicros - previousMicros < delay_clc || delay_clc > 4000)
   {
-    
-    if(menu){
-      speed_+=10; 
-      stepper.setSpeed(speed_,SMOOTH);
+    return;
   }
-  else{
-    if(temp<280)temp+=5; regulator.setpoint = temp;  
-    }
-    print_lcd();
-  }
-  if (enc1.isLeft()){
-    
-    if(menu){
-      speed_-=10;
-      stepper.setSpeed(speed_,SMOOTH);
-     
-    
-    } else{
-    if(temp>0)temp-=5; regulator.setpoint = temp;  
-    }
-    print_lcd();
-   }
-  if (enc1.isClick()){menu=!menu;print_lcd();}
-  if((millis()- time_)>1000){print_lcd();}
- if(enc1.isHolded()){
-   en=!en;
-   print_lcd();
-   if(en) stepper.disable();
-   else stepper.enable();
-  }
+
+  //Serial.println(delay);
+  digitalWrite(5, state);
+  previousMicros = currentMicros;
+  state = !state;
 }
-void print_lcd(){
 
-  if(menu){
-     lcd.setCursor(15,1);
-      lcd.print("<");
-      lcd.setCursor(15,0);
-      lcd.print(" ");
-    }
-    else{
-      lcd.setCursor(15,0);
-      lcd.print("<");
-      lcd.setCursor(15,1);
-      lcd.print("    ");
-    }
-      
-     lcd.setCursor(8,1);
-     lcd.print("    "); 
-     lcd.setCursor(8,1); 
-     lcd.print(speed_);
+ISR(TIMER2_A) {   
+  step();  
+}
 
-     lcd.setCursor(12,1);
-     lcd.print(" "); 
-     lcd.setCursor(12,1);
-     if(en) lcd.print("S");
-     else lcd.print("R");
-     
-     
-     lcd.setCursor(8,0);
-     lcd.print("       "); 
-     lcd.setCursor(8,0); 
-     lcd.print(int(val_f));
-     lcd.print("/");
-     lcd.print(temp);  
-     time_=millis();
-  
-  }
- 
-const short temptable_11[][2] PROGMEM = {
-    {1, 841},
-   {54, 255},
-   {107, 209},
-   {160, 184},
-   {213, 166},
-   {266, 153},
-   {319, 142},
-   {372, 132},
-   {425, 124},
-   {478, 116},
-   {531, 108},
-   {584, 101},
-   {637, 93},
-   {690, 86},
-   {743, 78},
-   {796, 70},
-   {849, 61},
-   {902, 50},
-   {955, 34},
-   {1008, 3}
-};
-
-# define BEDTEMPTABLE_LEN (sizeof(temptable_11)/sizeof(*temptable_11))
-#define PGM_RD_W(x)   (short)pgm_read_word(&x)
-static float analog2tempBed(int raw) {
-    float celsius = 0;
-    byte i;
- 
-    for (i = 1; i < BEDTEMPTABLE_LEN; i++)
+ int get_temp(int port)
+{
+  int res = analogRead(port);
+  res += analogRead(port);
+  res += analogRead(port);
+  res += analogRead(port);
+  res /=4;
+  //Serial.println(res);
+  const short temp_mass[41] = {4039,4002,3947,3869,3762,3621,3444,3232,2989,2724,2447,2169,1901,1650,1423,1221,1045,893,763,653,560,482,416,360,313,273,239,210,185,164,146,130,116,105,94,85,77,70,64,58,54};
+  int i = 0;
+  float celsius;
+  for( i = 0; i < 40; i++)
+  {
+    if(res > temp_mass[i])
     {
-        if (PGM_RD_W(temptable_11[i][0]) > raw)
-        {
-            celsius = PGM_RD_W(temptable_11[i - 1][1]) +
-                (raw - PGM_RD_W(temptable_11[i - 1][0])) *
-                (float)(PGM_RD_W(temptable_11[i][1]) - PGM_RD_W(temptable_11[i - 1][1])) /
-                (float)(PGM_RD_W(temptable_11[i][0]) - PGM_RD_W(temptable_11[i - 1][0]));
-            break;
-        }
+      celsius = ((i-1)*10) + (res - temp_mass[i-1]) * ((float)(10.0) / ((float)(temp_mass[i]) - temp_mass[i-1]));
+      return celsius;
     }
- 
-    // Overflow: Set to last value in the table
-    if (i == BEDTEMPTABLE_LEN) celsius = PGM_RD_W(temptable_11[i - 1][1]);
- 
-    return celsius;
+  }
+  return 999;
+  
 }
 
-float get_temp(){
-  int v = analogRead(A0);
-  return analog2tempBed(v);
+unsigned long timeLed = 0;
+unsigned long tempTime = 0;
+unsigned long tempGetTemp = 0;
+
+int temp = 0;
+void loop() {
+  
+  //step();
+  tempTime = millis();
+  if(tempTime-tempGetTemp>10)
+  {
+    tempGetTemp = tempTime;
+    temp = get_temp(A0); 
+    regulator.input = temp;
+
+    delay_clc = analogRead(A3);
+  }     
+  
+  analogWrite(3, regulator.getResultTimer());
+   
+
+ if(tempTime-timeLed>200)
+{  
+  timeLed = tempTime;
+
+  int setTemp = analogRead(A2);
+  setTemp = map(setTemp,0,4096,0,350);
+
+  
+  if((setTemp-prevSetTemp>5 || prevSetTemp-setTemp>5) || tempTime - timeSetTemp<2000)
+  {
+    if(setTemp-prevSetTemp>5 || prevSetTemp-setTemp>5)
+    {
+      timeSetTemp = tempTime;        
+      prevSetTemp = setTemp;
+      regulator.setpoint = setTemp;
+    }
+    
+    disp.displayInt(setTemp);    
   }
+  else
+  {    
+    disp.displayInt(temp);
+  }
+}
+
+}
+
+
+
